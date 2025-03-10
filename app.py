@@ -3,6 +3,9 @@ import google.generativeai as genai
 import os
 from datetime import datetime
 from dotenv import load_dotenv
+import requests
+from bs4 import BeautifulSoup
+import re
 
 # Cargar variables de entorno
 load_dotenv()
@@ -52,6 +55,36 @@ def init_gemini():
 
 # Inicializar Gemini
 gemini_initialized = init_gemini()
+
+# Función para convertir texto a Pascal Case
+def to_pascal_case(text):
+    # Dividir el texto en palabras y capitalizar cada una
+    words = text.lower().split()
+    return ' '.join(word.capitalize() for word in words)
+
+# Función para obtener la URL de la imagen de IMDB
+def get_imdb_image(movie_name):
+    try:
+        # Buscar la película en IMDB
+        search_url = f"https://www.imdb.com/find?q={movie_name.replace(' ', '+')}&s=tt&ttype=ft"
+        headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36'}
+        response = requests.get(search_url, headers=headers)
+        soup = BeautifulSoup(response.text, 'html.parser')
+        
+        # Encontrar el primer resultado de película
+        first_result = soup.find('a', href=re.compile(r'/title/tt\d+/'))
+        if first_result:
+            movie_url = f"https://www.imdb.com{first_result['href']}"
+            movie_response = requests.get(movie_url, headers=headers)
+            movie_soup = BeautifulSoup(movie_response.text, 'html.parser')
+            
+            # Buscar la imagen de portada
+            poster = movie_soup.find('img', class_='ipc-image')
+            if poster and 'src' in poster.attrs:
+                return poster['src']
+    except Exception as e:
+        print(f"Error getting IMDB image: {str(e)}")
+    return None
 
 # Estilos CSS personalizados
 st.markdown("""
@@ -171,24 +204,23 @@ st.markdown("""
     .results-container {
         background: rgba(255, 255, 255, 0.05);
         border-radius: 15px;
-        padding: 2.5rem;
+        padding: 2rem;
         margin: 2rem 0;
         border: 1px solid rgba(255, 215, 0, 0.2);
-        white-space: pre-line;
-        line-height: 1.6;
-        font-size: 1.1rem;
+        line-height: 1.4;
+        font-size: 1rem;
     }
     
     .results-container h1 {
         font-size: 2rem !important;
-        margin-bottom: 2rem !important;
+        margin: 1rem 0 !important;
         color: #FFD700 !important;
         text-align: center !important;
     }
     
     .results-section {
-        margin-bottom: 1.5rem;
-        padding-bottom: 1.5rem;
+        margin-bottom: 1rem;
+        padding-bottom: 1rem;
         border-bottom: 1px solid rgba(255, 215, 0, 0.1);
     }
     
@@ -200,18 +232,51 @@ st.markdown("""
     
     .section-title {
         color: #FFD700;
-        margin-bottom: 0.5rem;
+        font-size: 1.1rem;
+        margin-bottom: 0.3rem;
         font-weight: 600;
     }
     
     .section-content {
         color: #ffffff;
-        margin-left: 1.5rem;
+        margin-left: 1rem;
+        font-size: 1rem;
+        line-height: 1.4;
     }
     
     .bullet-point {
         color: #FFD700;
-        margin-right: 0.5rem;
+        margin-right: 0.3rem;
+    }
+
+    .section-content span.bullet-point {
+        display: inline-block;
+    }
+
+    .section-content > *:not(:first-child) {
+        margin-top: 0.4rem;
+    }
+
+    /* Contenedor para elementos con bullets */
+    .bullet-container {
+        display: block;
+        margin-top: 0.4rem;
+    }
+
+    .bullet-container:first-child {
+        margin-top: 0;
+    }
+
+    .movie-poster {
+        text-align: center;
+        margin: 1rem 0;
+    }
+    
+    .movie-poster img {
+        max-width: 300px;
+        margin: 0 auto;
+        border-radius: 10px;
+        box-shadow: 0 4px 8px rgba(0,0,0,0.5);
     }
     
     /* Ocultar el mensaje "press enter to apply" */
@@ -222,6 +287,40 @@ st.markdown("""
     .stTextInput div[data-baseweb="base-input"] + div {
         display: none !important;
     }
+    
+    /* Estilos específicos para los premios */
+    .awards-list {
+        display: flex;
+        flex-direction: column;
+        gap: 0.5rem;
+    }
+    
+    .award-item {
+        background: rgba(255, 215, 0, 0.05);
+        border-radius: 8px;
+        padding: 0.5rem 1rem;
+        margin: 0.2rem 0;
+        border-left: 3px solid #FFD700;
+    }
+    
+    .award-year {
+        color: #FFD700;
+        font-weight: bold;
+        margin-right: 0.5rem;
+    }
+
+    .no-awards {
+        background: rgba(255, 255, 255, 0.05);
+        border-radius: 8px;
+        padding: 1rem;
+        text-align: center;
+        font-style: italic;
+        color: rgba(255, 255, 255, 0.8);
+    }
+
+    .nomination {
+        border-left-color: #C0C0C0;
+    }
     </style>
     """, unsafe_allow_html=True)
 
@@ -230,57 +329,88 @@ def obtener_info_pelicula(nombre_pelicula):
     try:
         # Configuración básica del modelo
         model = genai.GenerativeModel('gemini-1.5-flash')
+        
+        # Convertir el nombre de la película a Pascal Case
+        nombre_pelicula_pascal = to_pascal_case(nombre_pelicula)
 
-        prompt = f"""Proporciona información sobre la película '{nombre_pelicula}' en el siguiente formato exacto, sin incluir marcadores de código ni formato markdown:
+        prompt = f"""Proporciona información sobre la película '{nombre_pelicula}' en el siguiente formato exacto, sin incluir marcadores de código ni formato markdown. La información debe ser concisa y directa.
 
-<h1>🎬 {nombre_pelicula}</h1>
+Para la sección de premios, sigue estas reglas:
+1. Si la película ganó premios, muestra cada premio en su propio award-item
+2. Si la película solo tuvo nominaciones, muestra las nominaciones con la clase 'award-item nomination'
+3. Si la película no ganó ni fue nominada a ningún premio importante, muestra el mensaje en un div con clase 'no-awards'
+
+<h1>🎬 {nombre_pelicula_pascal}</h1>
+
+<div class='movie-poster'>
+[POSTER_PLACEHOLDER]
+</div>
 
 <div class='results-section'>
 <div class='section-title'>📝 SINOPSIS</div>
-<div class='section-content'>[Sinopsis de la película]</div>
+<div class='section-content'>[Breve sinopsis de máximo 3 líneas]</div>
 </div>
 
 <div class='results-section'>
 <div class='section-title'>🏆 PREMIOS Y NOMINACIONES</div>
 <div class='section-content'>
-<p><strong>• [Año]:</strong> [Lista de premios]</p>
-<p><strong>• [Año]:</strong> [Lista de premios]</p>
-<p><strong>• [Año]:</strong> [Lista de premios]</p>
+<div class='awards-list'>
+[Si ganó premios, usar este formato para cada premio:]
+<div class='award-item'>
+<span class='award-year'>[Año]</span> [Premio] a [Categoría] - Ganador
+</div>
+
+[Si solo tuvo nominaciones, usar este formato:]
+<div class='award-item nomination'>
+<span class='award-year'>[Año]</span> Nominación al [Premio] por [Categoría]
+</div>
+
+[Si no tuvo premios ni nominaciones, usar este formato:]
+<div class='no-awards'>
+Esta película no recibió nominaciones ni premios destacados en las principales ceremonias de premiación.
+</div>
+</div>
 </div>
 </div>
 
 <div class='results-section'>
-<div class='section-title'>⭐ CALIFICACIÓN</div>
+<div class='section-title'>⭐ VALORACIÓN</div>
 <div class='section-content'>
-<span class='bullet-point'>•</span> Puntuación general: [puntuación]
-<span class='bullet-point'>•</span> Críticas destacadas: [críticas principales]
+<div class='bullet-container'>
+<span class='bullet-point'>•</span> IMDB: [puntuación]/10
+</div>
+<div class='bullet-container'>
+<span class='bullet-point'>•</span> Crítica: [resumen en una línea]
+</div>
 </div>
 </div>
 
 <div class='results-section'>
-<div class='section-title'>🎥 DATOS DE PRODUCCIÓN</div>
+<div class='section-title'>🎥 PRODUCCIÓN</div>
 <div class='section-content'>
-<span class='bullet-point'>•</span> Director: [nombre del director]
-<span class='bullet-point'>•</span> Elenco principal: [actores principales]
-<span class='bullet-point'>•</span> Año de lanzamiento: [año]
-<span class='bullet-point'>•</span> Presupuesto y recaudación: [datos financieros]
+<div class='bullet-container'>
+<span class='bullet-point'>•</span> Director: [nombre]
+</div>
+<div class='bullet-container'>
+<span class='bullet-point'>•</span> Elenco: [principales actores]
+</div>
+<div class='bullet-container'>
+<span class='bullet-point'>•</span> Año: [año] | Duración: [duración]
+</div>
 </div>
 </div>
 
 <div class='results-section'>
 <div class='section-title'>🌟 DATOS CURIOSOS</div>
 <div class='section-content'>
-<span class='bullet-point'>•</span> [Dato curioso 1]
-<span class='bullet-point'>•</span> [Dato curioso 2]
-<span class='bullet-point'>•</span> [Dato curioso 3]
+<div class='bullet-container'>
+<span class='bullet-point'>•</span> [Dato más relevante]
+</div>
+<div class='bullet-container'>
+<span class='bullet-point'>•</span> [Segundo dato más interesante]
 </div>
 </div>
-
-Para la sección de premios, usa el siguiente formato para cada premio:
-<p><strong>• 2001:</strong> Premio Oscar a Mejor Película</p>
-
-Si algún dato no está disponible, indica 'Información no disponible' en esa sección.
-No incluyas ningún formato markdown ni delimitadores de código (```) en la respuesta."""
+</div>"""
 
         # Generar respuesta con manejo de errores mejorado
         try:
@@ -288,8 +418,19 @@ No incluyas ningún formato markdown ni delimitadores de código (```) en la res
             if response and response.text:
                 # Limpiar el formato del texto
                 texto_limpio = response.text.strip()
-                # Eliminar cualquier delimitador de código que pudiera aparecer
+                # Eliminar cualquier delimitador de código
                 texto_limpio = texto_limpio.replace("```html", "").replace("```", "")
+                
+                # Obtener la URL de la imagen de IMDB
+                poster_url = get_imdb_image(nombre_pelicula)
+                if poster_url:
+                    # Reemplazar el placeholder con la imagen
+                    img_html = f"<img src='{poster_url}' alt='Poster de {nombre_pelicula_pascal}' style='max-width: 300px; margin: 20px auto; display: block; border-radius: 10px; box-shadow: 0 4px 8px rgba(0,0,0,0.5);'>"
+                    texto_limpio = texto_limpio.replace("[POSTER_PLACEHOLDER]", img_html)
+                else:
+                    # Si no se encuentra la imagen, eliminar el placeholder
+                    texto_limpio = texto_limpio.replace("[POSTER_PLACEHOLDER]", "")
+                
                 return texto_limpio
             else:
                 return "Lo siento, no pude generar información para esta película. Por favor, intenta con otra película."
